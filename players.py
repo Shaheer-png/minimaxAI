@@ -278,6 +278,8 @@ class alphaBetaAI(connect4Player):
     def evaluate_position(self, env, player):
         """Quick position evaluation"""
         score = 0
+        rows, cols = env.board.shape
+        board = env.board
         # Center column preference
         center_col = env.board.shape[1] // 2
         center_count = sum(1 for row in range(env.board.shape[0]) 
@@ -294,6 +296,18 @@ class alphaBetaAI(connect4Player):
         for row in range(env.board.shape[0] - 3):
             for col in range(env.board.shape[1]):
                 window = [env.board[row + i][col] for i in range(4)]
+                score += self.evaluate_window(window, player)
+
+         # Diagonal sequences (positive slope)
+        for row in range(rows - 3):
+            for col in range(cols - 3):
+                window = [board[row + i][col + i] for i in range(4)]
+                score += self.evaluate_window(window, player)
+                
+        # Diagonal sequences (negative slope)
+        for row in range(3, rows):
+            for col in range(cols - 3):
+                window = [board[row - i][col + i] for i in range(4)]
                 score += self.evaluate_window(window, player)
                 
         return score
@@ -334,7 +348,7 @@ class alphaBetaAI(connect4Player):
             
             # Check for immediate win with increased weight
             if env.gameOver(col, self.position):
-                score += 11000
+                score += 11000000
             
             # Quick position evaluation
             score += self.evaluate_position(env, self.position)
