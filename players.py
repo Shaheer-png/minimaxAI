@@ -4,6 +4,7 @@ import math
 from connect4 import connect4
 import sys
 from copy import deepcopy
+import numpy as np
 
 class connect4Player(object):
 	def __init__(self, position, seed=0, CVDMode=False):
@@ -259,75 +260,46 @@ class alphaBetaAI(connect4Player):
     def __init__(self, position, seed=0, CVDMode=False):
         super().__init__(position, seed, CVDMode)
         self.first_move = True
+        self.time_limit = 2.8  # Define time limit as class variable
 
-    def order_moves(self, valid_moves, env):
-        """
-        Order moves based only on current board state:
-        1. Winning moves
-        2. Blocking opponent wins
-        3. Center and near-center columns
-        """
-        from copy import deepcopy
-        
-        move_rankings = []
-        for col in valid_moves:
-            score = 0
-            test_env = deepcopy(env)
-            row = self.make_test_move(test_env, col, test_env.turnPlayer.position)
-            
-            # Prioritize winning moves
-            if test_env.gameOver(col, test_env.turnPlayer.position):
-                score += 10000
-            
-            # Check if opponent would win in this column
-            if row + 1 < test_env.board.shape[0]:  # If not at top
-                test_env_2 = deepcopy(env)
-                test_env_2.board[row][col] = self.opponent.position
-                if test_env_2.gameOver(col, self.opponent.position):
-                    score += 5000
-            
-            # Prefer center columns - the closer to center the better
-            score += 50 * (4 - abs(col - 3))
-            
-            move_rankings.append((score, col))
-            
-        # Sort moves by score
-        move_rankings.sort(reverse=True)
-        return [move for score, move in move_rankings]
+    def get_valid_columns(self, env):
+        return [col for col in range(env.board.shape[1]) if env.topPosition[col] >= 0]
+
+    def make_move_inplace(self, env, col, player):
+        row = env.topPosition[col]
+        env.board[row][col] = player
+        env.topPosition[col] -= 1
+        return row
+
+    def undo_move(self, env, col, row):
+        env.topPosition[col] += 1
+        env.board[row][col] = 0
 
     def evaluate_position(self, env, player):
-        """Same evaluation as before"""
+        """Quick position evaluation"""
         score = 0
-        board = env.board
-        rows, cols = board.shape
-
-        # Evaluate horizontal windows
-        for row in range(rows):
-            for col in range(cols - 3):
-                window = [board[row][col+i] for i in range(4)]
+        # Center column preference
+        center_col = env.board.shape[1] // 2
+        center_count = sum(1 for row in range(env.board.shape[0]) 
+                         if env.board[row][center_col] == player)
+        score += center_count * 3
+        
+        # Horizontal sequences
+        for row in range(env.board.shape[0]):
+            for col in range(env.board.shape[1] - 3):
+                window = [env.board[row][col + i] for i in range(4)]
                 score += self.evaluate_window(window, player)
-
-        # Evaluate vertical windows
-        for row in range(rows - 3):
-            for col in range(cols):
-                window = [board[row+i][col] for i in range(4)]
+                
+        # Vertical sequences
+        for row in range(env.board.shape[0] - 3):
+            for col in range(env.board.shape[1]):
+                window = [env.board[row + i][col] for i in range(4)]
                 score += self.evaluate_window(window, player)
-
-        # Evaluate diagonal windows (positive slope)
-        for row in range(rows - 3):
-            for col in range(cols - 3):
-                window = [board[row+i][col+i] for i in range(4)]
-                score += self.evaluate_window(window, player)
-
-        # Evaluate diagonal windows (negative slope)
-        for row in range(3, rows):
-            for col in range(cols - 3):
-                window = [board[row-i][col+i] for i in range(4)]
-                score += self.evaluate_window(window, player)
-
+                
         return score
 
     def evaluate_window(self, window, player):
+        """Evaluate a window of 4 positions"""
         opponent = self.opponent.position if player == self.position else self.position
         
         player_count = sum(1 for piece in window if piece == player)
@@ -339,46 +311,76 @@ class alphaBetaAI(connect4Player):
             
         score = 0
         if player_count == 4:
-            score += 1000
+            score += 100000
         elif player_count == 3 and empty_count == 1:
-            score += 70
+            score += 50
         elif player_count == 2 and empty_count == 2:
-            score += 10
+            score += 2
         
         if opponent_count == 3 and empty_count == 1:
-            score -= 60
+            score -= 100
             
         return score
 
+    def order_moves(self, valid_moves, env):
+        move_rankings = []
+        
+        for col in valid_moves:
+            if env.topPosition[col] < 0:
+                continue
+                
+            score = 0
+            row = self.make_move_inplace(env, col, self.position)
+            
+            # Check for immediate win with increased weight
+            if env.gameOver(col, self.position):
+                score += 11000
+            
+            # Quick position evaluation
+            score += self.evaluate_position(env, self.position)
+            self.undo_move(env, col, row)
+            
+            # Check opponent's response
+            if env.topPosition[col] >= 0:
+                row_opp = self.make_move_inplace(env, col, self.opponent.position)
+                if env.gameOver(col, self.opponent.position):
+                    score += 1000  # Increased blocking priority
+                self.undo_move(env, col, row_opp)
+            
+            # Center control bonus
+            score += 40 * (4 - abs(col - 3))
+            move_rankings.append((score, col))
+            
+        move_rankings.sort(reverse=True)
+        return [col for score, col in move_rankings]
+
     def alpha_beta(self, env, depth, alpha, beta, maximizing_player, start_time):
         import time
-        from copy import deepcopy
         
-        if time.time() - start_time > 2.8:  # Time check
+        # Base case: Check time limit first
+        if time.time() - start_time > self.time_limit:
             return self.evaluate_position(env, self.position)
             
         valid_moves = self.get_valid_columns(env)
         if not valid_moves:
             return 0
             
-        # Check immediate wins/losses
-        for col in valid_moves:
-            test_env = deepcopy(env)
-            row = self.make_test_move(test_env, col, test_env.turnPlayer.position)
-            if test_env.gameOver(col, test_env.turnPlayer.position):
-                return 1000 if maximizing_player else -1000
-
+        # Terminal node evaluation
         if depth == 0:
             return self.evaluate_position(env, self.position)
-
+            
         ordered_moves = self.order_moves(valid_moves, env)
         
         if maximizing_player:
             value = float('-inf')
             for col in ordered_moves:
-                test_env = deepcopy(env)
-                self.make_test_move(test_env, col, self.position)
-                value = max(value, self.alpha_beta(test_env, depth - 1, alpha, beta, False, start_time))
+                if time.time() - start_time > self.time_limit:
+                    break
+                    
+                row = self.make_move_inplace(env, col, self.position)
+                value = max(value, self.alpha_beta(env, depth - 1, alpha, beta, False, start_time))
+                self.undo_move(env, col, row)
+                
                 alpha = max(alpha, value)
                 if alpha >= beta:
                     break
@@ -386,66 +388,65 @@ class alphaBetaAI(connect4Player):
         else:
             value = float('inf')
             for col in ordered_moves:
-                test_env = deepcopy(env)
-                self.make_test_move(test_env, col, self.opponent.position)
-                value = min(value, self.alpha_beta(test_env, depth - 1, alpha, beta, True, start_time))
+                if time.time() - start_time > self.time_limit:
+                    break
+                    
+                row = self.make_move_inplace(env, col, self.opponent.position)
+                value = min(value, self.alpha_beta(env, depth - 1, alpha, beta, True, start_time))
+                self.undo_move(env, col, row)
+                
                 beta = min(beta, value)
                 if alpha >= beta:
                     break
             return value
 
-    def get_valid_columns(self, env):
-        return [col for col in range(env.board.shape[1]) if env.topPosition[col] >= 0]
-
-    def make_test_move(self, env, col, player):
-        row = env.topPosition[col]
-        env.board[row][col] = player
-        env.topPosition[col] -= 1
-        return row
-
     def play(self, env: connect4, move_dict: dict) -> None:
-		
+        import time
+        
         if self.first_move:
             self.first_move = False
             move_dict['move'] = 3
             return
 
+        # Count number of pieces on board
+        pieces_on_board = np.sum(env.board != 0)
+        
+        # Adjust depth based on game progress
+        if pieces_on_board < 15:
+            depth = 3
+        elif pieces_on_board < 25:
+            depth = 4
+        elif pieces_on_board < 30:
+            depth = 5
+        else:
+            depth = 6
+
         start_time = time.time()
         valid_moves = self.get_valid_columns(env)
         ordered_moves = self.order_moves(valid_moves, env)
         best_move = ordered_moves[0]
-        
-        # Iterative deepening
-        depth = 2
-        while time.time() - start_time < 2.5:
-            current_best_move = best_move
-            best_score = float('-inf')
-            alpha = float('-inf')
-            beta = float('inf')
+        best_score = float('-inf')
+        alpha = float('-inf')
+        beta = float('inf')
 
-            for col in ordered_moves:
-                test_env = deepcopy(env)
-                row = self.make_test_move(test_env, col, self.position)
-                
-                if test_env.gameOver(col, self.position):
-                    move_dict['move'] = col
-                    return
-                    
-                score = self.alpha_beta(test_env, depth, alpha, beta, False, start_time)
-                
-                if score > best_score:
-                    best_score = score
-                    current_best_move = col
-                
-                alpha = max(alpha, best_score)
-                
-            if time.time() - start_time < 2.8:
-                best_move = current_best_move
-                depth += 1
-            else:
-                break
+        for col in ordered_moves:
+            test_env = deepcopy(env)
+            row = self.make_move_inplace(test_env, col, self.position)
+            
+            if test_env.gameOver(col, self.position):
+                move_dict['move'] = col
+                return
+            
+            score = self.alpha_beta(test_env, depth, alpha, beta, False, start_time)
+            
+            if score > best_score:
+                best_score = score
+                best_move = col
+            
+            alpha = max(alpha, best_score)
 
         move_dict['move'] = best_move
+
 
 # Defining Constants
 SQUARESIZE = 100
